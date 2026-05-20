@@ -181,18 +181,6 @@ $ ./pi_p 2000000000 32  → Tp = 0.4833 s  | Speedup = 7.85
 
 ---
 
-## Manifiesto de Transparencia
-
-Se utilizó IA generativa (Claude) como apoyo en los siguientes puntos:
-
-- Generación del esqueleto inicial de los archivos `.c`.
-- Verificación de la correctitud del patrón `pthread_create` / `pthread_join`.
-- Estructura y redacción del notebook `analisis.ipynb`.
-
-Todo el código fue revisado, entendido y validado por los integrantes del grupo antes de su entrega.
-
----
-
 ## Conclusiones
 
 1. La paralelización con Pthreads permite reducir el tiempo de cálculo de π de 3.79 s a 0.47 s con 16 hilos (Speedup ≈ 8×) sobre un procesador de 8 núcleos físicos.
