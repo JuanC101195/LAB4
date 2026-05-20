@@ -26,6 +26,7 @@ LAB4/
 ├── pi_p.c          # Cálculo paralelo de π con Pthreads
 ├── fibonacci.c     # Generador de Fibonacci con hilo trabajador
 ├── analisis.ipynb  # Notebook de análisis de resultados
+├── speedup_pi.png  # Gráfica de Speedup y Eficiencia
 └── README.md
 ```
 
@@ -41,35 +42,98 @@ $$\int_0^1 \frac{4}{1+x^2}\,dx = \pi$$
 
 El algoritmo divide `[0,1]` en **n rectángulos** (método del punto medio) y suma sus áreas.
 
+### Función integranda — `pi.c` y `pi_p.c`
+
+```c
+double f(double x)
+{
+    return 4.0 / (1.0 + x * x);
+}
+```
+
+### Versión serial — `CalcPi` en `pi.c`
+
+```c
+double CalcPi(int n)
+{
+    const double fH = 1.0 / (double)n;
+    double fSum = 0.0;
+    double fX;
+    int i;
+
+    for (i = 0; i < n; i++)
+    {
+        fX    = fH * ((double)i + 0.5);
+        fSum += f(fX);
+    }
+    return fH * fSum;
+}
+```
+
+### Versión paralela — estrategia Data Parallelism en `pi_p.c`
+
+Cada hilo recibe un sub-rango `[inicio, fin)` y calcula su suma **en una variable local** (sin mutex). El resultado parcial se almacena en la `struct` del hilo y el `main` lo recoge tras el `pthread_join`.
+
+**Struct de argumentos por hilo:**
+
+```c
+typedef struct {
+    int    inicio;     // primera iteración del sub-rango
+    int    fin;        // última iteración (exclusivo)
+    int    n;          // total de rectángulos
+    double resultado;  // suma parcial (salida del hilo)
+} ThreadArgs;
+```
+
+**Función del hilo:**
+
+```c
+void *calc_parcial(void *arg)
+{
+    ThreadArgs *args = (ThreadArgs *)arg;
+    const double fH  = 1.0 / (double)args->n;
+    double fSum_parcial = 0.0;
+    int i;
+
+    for (i = args->inicio; i < args->fin; i++)
+    {
+        double fX    = fH * ((double)i + 0.5);
+        fSum_parcial += f(fX);
+    }
+    args->resultado = fSum_parcial;
+    pthread_exit(NULL);
+}
+```
+
+**Orquestación en `CalcPi` (main crea hilos y recoge resultados):**
+
+```c
+// Crear T hilos
+for (t = 0; t < T; t++) {
+    args[t].inicio = t * chunk;
+    args[t].fin    = (t == T-1) ? n : args[t].inicio + chunk;
+    args[t].n      = n;
+    pthread_create(&hilos[t], NULL, calc_parcial, &args[t]);
+}
+
+// Esperar y agregar parciales
+double fSum_total = 0.0;
+for (t = 0; t < T; t++) {
+    pthread_join(hilos[t], NULL);
+    fSum_total += args[t].resultado;
+}
+return (1.0 / n) * fSum_total;
+```
+
 ### Documentación de funciones
 
-#### `pi.c` — Versión serial
-
-| Función | Descripción |
-|---|---|
-| `double get_time(void)` | Retorna el tiempo actual en segundos usando `clock_gettime(CLOCK_MONOTONIC)`. Se usa para medir exclusivamente el tiempo de `CalcPi`. |
-| `double f(double x)` | Evalúa la función integranda `4 / (1 + x²)` en el punto `x`. |
-| `double CalcPi(int n)` | Aproxima π dividiendo `[0,1]` en `n` rectángulos y sumando sus áreas. Retorna la aproximación de π. |
-| `int main(int argc, char *argv[])` | Recibe `n` por línea de comandos, mide el tiempo de `CalcPi` e imprime el resultado y el tiempo `Ts`. |
-
-#### `pi_p.c` — Versión paralela
-
-| Función | Descripción |
-|---|---|
-| `double get_time(void)` | Igual que en `pi.c`. |
-| `double f(double x)` | Igual que en `pi.c`. |
-| `void *calc_parcial(void *arg)` | Función ejecutada por cada hilo. Recibe un `ThreadArgs*` con su sub-rango `[inicio, fin)`, calcula la suma parcial en una variable local (sin mutex) y la almacena en `args->resultado`. |
-| `double CalcPi(int n, int T)` | Divide `[0,n)` en `T` sub-rangos, lanza `T` hilos con `pthread_create`, espera su finalización con `pthread_join`, agrega las sumas parciales y retorna `fH * suma_total`. |
-| `int main(int argc, char *argv[])` | Recibe `n` y `T` por línea de comandos, mide el tiempo de `CalcPi` e imprime el resultado y el tiempo `Tp`. |
-
-**`ThreadArgs` — struct de argumentos por hilo:**
-
-| Campo | Tipo | Descripción |
+| Función | Archivo | Descripción |
 |---|---|---|
-| `inicio` | `int` | Primera iteración del sub-rango (inclusivo) |
-| `fin` | `int` | Última iteración del sub-rango (exclusivo) |
-| `n` | `int` | Total de rectángulos (para calcular `fH`) |
-| `resultado` | `double` | Suma parcial calculada por el hilo (salida) |
+| `double get_time(void)` | ambos | Retorna tiempo actual en segundos con `clock_gettime(CLOCK_MONOTONIC)` |
+| `double f(double x)` | ambos | Evalúa `4 / (1 + x²)` en el punto `x` |
+| `double CalcPi(int n)` | `pi.c` | Calcula π serialmente con `n` rectángulos |
+| `void *calc_parcial(void *arg)` | `pi_p.c` | Función de cada hilo: calcula suma parcial de su sub-rango |
+| `double CalcPi(int n, int T)` | `pi_p.c` | Orquesta `T` hilos, recoge parciales y retorna π |
 
 ---
 
@@ -77,28 +141,70 @@ El algoritmo divide `[0,1]` en **n rectángulos** (método del punto medio) y su
 
 ### Descripción
 
-Se genera la secuencia de Fibonacci en un **hilo trabajador** que escribe sobre un arreglo compartido asignado por `main`. El patrón implementado es:
+Se genera la secuencia de Fibonacci en un **hilo trabajador** que escribe sobre un arreglo compartido asignado por `main`:
 
 ```
-main: malloc → pthread_create → pthread_join → imprime arreglo
-trabajador:    ──► calcula Fibonacci ──► pthread_exit
+F(-2)=0,  F(-1)=1,  F(n) = F(n-1) + F(n-2)   (n ≥ 0)
+→  0, 1, 1, 2, 3, 5, 8, 13, 21, 34, ...
+```
+
+### Struct de argumentos — `fibonacci.c`
+
+```c
+typedef struct {
+    long *arreglo;  // puntero al arreglo compartido (asignado por main)
+    int   N;        // cantidad de términos a calcular
+} FibArgs;
+```
+
+### Función del hilo trabajador
+
+```c
+void *hilo_trabajador(void *arg)
+{
+    FibArgs *args = (FibArgs *)arg;
+    long    *arr  = args->arreglo;
+    int      N    = args->N;
+
+    if (N >= 1) arr[0] = 0;
+    if (N >= 2) arr[1] = 1;
+
+    for (int i = 2; i < N; i++)
+        arr[i] = arr[i-1] + arr[i-2];
+
+    pthread_exit(NULL);
+}
+```
+
+### Flujo del hilo `main`
+
+```c
+// 1. Asignar memoria compartida
+long *arreglo = malloc(N * sizeof(long));
+
+// 2. Empaquetar argumentos
+FibArgs args = { .arreglo = arreglo, .N = N };
+
+// 3. Crear hilo trabajador
+pthread_t trabajador;
+pthread_create(&trabajador, NULL, hilo_trabajador, &args);
+
+// 4. Bloquear hasta que el trabajador termine
+pthread_join(trabajador, NULL);
+
+// 5. Leer e imprimir (arreglo garantizado completo)
+for (int i = 0; i < N; i++)
+    printf("  F(%d) = %ld\n", i, arreglo[i]);
+
+free(arreglo);
 ```
 
 ### Documentación de funciones
 
-#### `fibonacci.c`
-
 | Función | Descripción |
 |---|---|
-| `void *hilo_trabajador(void *arg)` | Recibe un `FibArgs*` con el puntero al arreglo compartido y `N`. Calcula los `N` términos de la secuencia y los escribe en el arreglo. Llama `pthread_exit(NULL)` al terminar. |
-| `int main(int argc, char *argv[])` | Recibe `N` por línea de comandos. Asigna memoria con `malloc`, lanza el hilo trabajador, espera con `pthread_join` y finalmente imprime la secuencia. |
-
-**`FibArgs` — struct de argumentos:**
-
-| Campo | Tipo | Descripción |
-|---|---|---|
-| `arreglo` | `long *` | Puntero al arreglo compartido asignado por `main` |
-| `N` | `int` | Cantidad de términos a generar |
+| `void *hilo_trabajador(void *arg)` | Recibe `FibArgs*`, calcula `N` términos de Fibonacci y los escribe en el arreglo compartido. |
+| `int main(int argc, char *argv[])` | Asigna memoria con `malloc`, lanza el hilo, espera con `pthread_join` e imprime la secuencia. |
 
 ---
 
@@ -138,31 +244,26 @@ Ambas versiones producen el mismo resultado con error < 1e-13.
 
 ```bash
 $ ./fibonacci 10
-  F(0) = 0
-  F(1) = 1
-  F(2) = 1
-  F(3) = 2
-  F(4) = 3
-  F(5) = 5
-  F(6) = 8
-  F(7) = 13
-  F(8) = 21
-  F(9) = 34
+  F(0) = 0    F(1) = 1    F(2) = 1    F(3) = 2    F(4) = 3
+  F(5) = 5    F(6) = 8    F(7) = 13   F(8) = 21   F(9) = 34
 ```
 
-### Benchmarks de rendimiento (n = 2 000 000 000, AMD Ryzen 7 5825U — 16 núcleos)
+### Benchmarks — n = 2 000 000 000 | AMD Ryzen 7 5825U (16 núcleos)
 
 ```bash
-$ ./pi_s 2000000000
-  Ts (serial) : 3.7935 segundos
+$ ./pi_s 2000000000       →  Ts = 3.7935 s
 
-$ ./pi_p 2000000000 1   → Tp = 3.7736 s  | Speedup = 1.01
-$ ./pi_p 2000000000 2   → Tp = 1.5957 s  | Speedup = 2.38
-$ ./pi_p 2000000000 4   → Tp = 1.0075 s  | Speedup = 3.77
-$ ./pi_p 2000000000 8   → Tp = 0.5595 s  | Speedup = 6.78
-$ ./pi_p 2000000000 16  → Tp = 0.4673 s  | Speedup = 8.11
-$ ./pi_p 2000000000 32  → Tp = 0.4833 s  | Speedup = 7.85
+$ ./pi_p 2000000000 1     →  Tp = 3.7736 s  | Speedup = 1.01 | Eficiencia = 1.01
+$ ./pi_p 2000000000 2     →  Tp = 1.5957 s  | Speedup = 2.38 | Eficiencia = 1.19
+$ ./pi_p 2000000000 4     →  Tp = 1.0075 s  | Speedup = 3.77 | Eficiencia = 0.94
+$ ./pi_p 2000000000 8     →  Tp = 0.5595 s  | Speedup = 6.78 | Eficiencia = 0.85
+$ ./pi_p 2000000000 16    →  Tp = 0.4673 s  | Speedup = 8.11 | Eficiencia = 0.51
+$ ./pi_p 2000000000 32    →  Tp = 0.4833 s  | Speedup = 7.85 | Eficiencia = 0.25
 ```
+
+### Gráfica de Speedup y Eficiencia
+
+![Speedup y Eficiencia](speedup_pi.png)
 
 ---
 
@@ -170,7 +271,7 @@ $ ./pi_p 2000000000 32  → Tp = 0.4833 s  | Speedup = 7.85
 
 | Problema | Solución |
 |---|---|
-| Retornar un `double` desde un hilo vía `pthread_join` con cast a `void*` es inseguro en algunas arquitecturas. | Se almacena el resultado en el campo `resultado` de la `struct ThreadArgs`, que el hilo `main` lee tras el `pthread_join`. |
+| Retornar un `double` desde un hilo vía `pthread_join` con cast a `void*` es inseguro en algunas arquitecturas. | Se almacena el resultado en el campo `resultado` de la `struct ThreadArgs`, que `main` lee tras el `pthread_join`. |
 | El último hilo debe cubrir el resto de iteraciones cuando `n` no es divisible exactamente por `T`. | El último hilo recibe `fin = n` en lugar de `inicio + chunk`, asegurando cobertura completa del rango. |
 
 ---
@@ -183,7 +284,7 @@ $ ./pi_p 2000000000 32  → Tp = 0.4833 s  | Speedup = 7.85
 
 ## Conclusiones
 
-1. La paralelización con Pthreads permite reducir el tiempo de cálculo de π de 3.79 s a 0.47 s con 16 hilos (Speedup ≈ 8×) sobre un procesador de 8 núcleos físicos.
+1. La paralelización con Pthreads reduce el tiempo de cálculo de π de 3.79 s a 0.47 s con 16 hilos (Speedup ≈ 8×) sobre 8 núcleos físicos.
 2. El overhead de creación y sincronización de hilos es despreciable cuando la carga de trabajo es suficientemente grande (n = 2 000 000 000).
 3. La Ley de Amdahl impone un límite práctico: el Speedup no escala linealmente con T debido a la fracción serial del programa.
 4. La eficiencia disminuye al aumentar T, especialmente al superar el número de núcleos físicos disponibles.
